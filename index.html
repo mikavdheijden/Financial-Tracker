@@ -71,6 +71,10 @@ svg.i{fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke
 .daylabel{font-size:12.5px;font-weight:650;color:var(--muted);padding:12px 0 2px;text-transform:capitalize}
 .daylabel+.row{border-top:0}
 .amt{font-weight:650;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.paidamt{display:inline-flex;align-items:center;gap:2px;border:1px solid var(--line);background:var(--bg);border-radius:10px;padding:4px 8px}
+.paidamt:focus-within{border-color:var(--accent)}
+.paidamt i{font-style:normal;color:var(--muted);font-weight:600}
+.paidamt input{border:0;background:none;width:78px;text-align:right;font-weight:650;font-size:16px;outline:none;padding:0;font-variant-numeric:tabular-nums}
 .check{width:26px;height:26px;border-radius:50%;border:2px solid var(--line);background:none;flex:none;display:grid;place-items:center;cursor:pointer;padding:0}
 .check.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .check svg{width:14px;height:14px}
@@ -383,7 +387,7 @@ function renderFixed(m){
     return `<div class="row" data-act="editFixed" data-id="${f.id}">
       <button class="check ${isPaid?'on':''}" data-act="togglePaid" data-id="${f.id}" aria-label="${isPaid?'Markeer als niet betaald':'Markeer als betaald'}">${isPaid ? CHECK : ''}</button>
       <div class="grow"><div>${esc(f.name)}</div><div class="muted small">${isPaid ? 'Betaald op '+fmtDate(p.date) : (f.day ? 'Verwacht op de '+f.day+'e' : 'Nog niet betaald')} · ${esc(f.category || 'Overig')}</div></div>
-      <div class="amt">${eur(amt)}${diff ? `<div class="small ${amt > num(f.amount) ? 'neg' : 'pos'}">budget ${eur(f.amount)}</div>` : ''}</div></div>`;
+      <div class="amt">${isPaid ? `<label class="paidamt"><i>€</i><input inputmode="decimal" data-paid="${f.id}" value="${num(amt).toFixed(2).replace('.',',')}" aria-label="Werkelijk betaald bedrag ${esc(f.name)}"></label>` : eur(amt)}${diff ? `<div class="small ${amt > num(f.amount) ? 'neg' : 'pos'}">budget ${eur(f.amount)}</div>` : (isPaid ? `<div class="small muted">tik om aan te passen</div>` : '')}</div></div>`;
   }).join('');
   return `
   <div class="title"><h2>Vaste lasten</h2></div>
@@ -741,10 +745,18 @@ const ACTIONS = {
 };
 document.addEventListener('click', e => {
   if (e.target.closest('[data-close]')){ closeSheet(); return; }
+  if (e.target.closest('.paidamt')) return;
   const el = e.target.closest('[data-act]'); if (!el) return;
   const fn = ACTIONS[el.dataset.act]; if (!fn) return;
   e.preventDefault(); e.stopPropagation(); fn(el.dataset.id, el);
 });
+
+document.addEventListener('change', e => {
+  const id = e.target.dataset && e.target.dataset.paid; if (!id) return;
+  const p = fixedPay(ui.month, id); if (!p) return;
+  p.amount = num(e.target.value); save(); render(); toast('Bedrag opgeslagen');
+});
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.dataset && e.target.dataset.paid) e.target.blur(); });
 
 let toastTimer;
 function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2200); }
