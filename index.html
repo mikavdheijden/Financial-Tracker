@@ -280,7 +280,24 @@ try { const t = localStorage.getItem(KEY+'-tab'); if (TABS.some(x => x.id === t)
 
 /* ============ Berekeningen ============ */
 const inMonth = (arr,m) => arr.filter(x => x.date && x.date.startsWith(m));
-const fixedItemsFor = m => db.fixedItems.filter(f => (!f.start || f.start <= m) && (!f.end || m <= f.end));
+/* Waarden per maand: een wijziging geldt vanaf die maand, eerdere maanden blijven ongewijzigd */
+function at(o, m){
+  if (!o) return o;
+  const r = {...o};
+  if (!o.hist) return r;
+  const keys = Object.keys(o.hist).filter(k => k <= m).sort();
+  for (const k of keys) Object.assign(r, o.hist[k]);
+  return r;
+}
+function setFrom(o, m, vals, isNew){
+  if (isNew){ Object.assign(o, vals); return; }
+  const cur = at(o, m), changed = {};
+  for (const k in vals) if (String(cur[k] ?? '') !== String(vals[k] ?? '')) changed[k] = vals[k];
+  if (!Object.keys(changed).length) return;
+  o.hist = o.hist || {};
+  o.hist[m] = Object.assign(o.hist[m] || {}, changed);
+}
+const fixedItemsFor = m => db.fixedItems.filter(f => (!f.start || f.start <= m) && (!f.end || m <= f.end)).map(f => at(f, m));
 const itemTx = (itemId,m) => db.fixedTx.find(t => t.itemId === itemId && t.date && t.date.startsWith(m));
 // Alle regels van een maand: terugkerende regels (betaald of nog open) + losse transacties
 function fixedRows(m){
@@ -294,7 +311,7 @@ function fixedRows(m){
   const dayOf = r => r.date ? +r.date.slice(8,10) : (r.item && r.item.day ? +r.item.day : 32);
   return rows.sort((a,b) => dayOf(a) - dayOf(b) || a.name.localeCompare(b.name));
 }
-function postBudget(c,m){ return num(c.budget) || sum(fixedItemsFor(m).filter(i => i.catId === c.id).map(i => i.amount)); }
+function postBudget(c,m){ return num(at(c,m).budget) || sum(fixedItemsFor(m).filter(i => i.catId === c.id).map(i => i.amount)); }
 function totals(m){
   const income = sum(inMonth(db.incomes,m).map(x => x.amount));
   const variable = sum(inMonth(db.expenses,m).map(x => x.amount));
@@ -333,11 +350,11 @@ const emptyCard = (text, btn) => `<div class="card emptycard"><p class="empty">$
 function renderExpenses(m){
   const list = inMonth(db.expenses,m).sort((a,b) => b.date.localeCompare(a.date));
   const spent = sum(list.map(x => x.amount));
-  const budget = sum(db.expenseCategories.map(c => c.budget));
+  const budget = sum(db.expenseCategories.map(c => at(c,m).budget));
   const per = {}; list.forEach(x => { const k = x.catId || ''; per[k] = (per[k]||0) + num(x.amount); });
   const left = budget - spent;
   const catRow = (c) => {
-    const s = per[c.id] || 0, b = num(c.budget), over = b > 0 && s > b + 0.004;
+    const s = per[c.id] || 0, b = num(at(c,m).budget), over = b > 0 && s > b + 0.004;
     return `<div class="brow" data-act="editCat" data-id="${c.id}"><div class="brow-top"><span class="dot" style="background:${c.color}"></span><span class="grow">${esc(c.name)}</span><span class="${over?'neg':''}"><b>${eur(s)}</b>${b>0?` <span class="muted">/ ${eur(b)}</span>`:''}</span></div>${b>0 ? bar(s,b,c.color) : ''}</div>`;
   };
   const catMap = Object.fromEntries(db.expenseCategories.map(c => [c.id,c]));
@@ -381,10 +398,10 @@ function expenseForm(x){
   });
 }
 function openCatManager(){
-  const rows = db.expenseCategories.map(c => `<button class="row" data-act="editCat" data-id="${c.id}" data-back="1"><span class="dot" style="background:${c.color}"></span><span class="grow">${esc(c.name)}</span><span class="muted">${eur(c.budget)}</span></button>`).join('');
-  const total = sum(db.expenseCategories.map(c => c.budget));
+  const rows = db.expenseCategories.map(c => `<button class="row" data-act="editCat" data-id="${c.id}" data-back="1"><span class="dot" style="background:${c.color}"></span><span class="grow">${esc(c.name)}</span><span class="muted">${eur(at(c,ui.month).budget)}</span></button>`).join('');
+  const total = sum(db.expenseCategories.map(c => at(c,ui.month).budget));
   openSheet(`<div class="sheethead"><h3>Categorieën & budgetten</h3><button class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
-    <p class="p">Het budget per categorie geldt voor elke maand. Totaal: <b class="txt">${eur(total)}</b> per maand.</p>
+    <p class="p">Budgetten voor ${monthLabel(ui.month)}. Een wijziging geldt vanaf deze maand; eerdere maanden blijven zoals ze waren. Totaal: <b class="txt">${eur(total)}</b>.</p>
     <div>${rows || '<p class="empty">Nog geen categorieën.</p>'}</div>
     <div class="formactions"><button class="btn primary" data-act="editCat" data-back="1">+ Categorie toevoegen</button></div>`);
 }
@@ -395,12 +412,12 @@ function catForm(c, back){
     title: isNew ? 'Nieuwe categorie' : 'Categorie bewerken',
     fields: [
       {name:'name', label:'Naam', value:c.name, autofocus:isNew},
-      {name:'budget', label:'Budget per maand', type:'money', value:c.budget, hint:'Laat leeg als je geen budget wilt.'},
+      {name:'budget', label:'Budget per maand', type:'money', value: isNew ? c.budget : at(c,ui.month).budget, hint: isNew ? 'Laat leeg als je geen budget wilt.' : `Een wijziging geldt vanaf ${monthLabel(ui.month)}. Eerdere maanden blijven ongewijzigd.`},
     ],
     back: back ? openCatManager : null,
     onSave: v => {
       if (!v.name) return 'Geef de categorie een naam';
-      Object.assign(c, {name:v.name, budget:v.budget});
+      c.name = v.name; setFrom(c, ui.month, {budget:v.budget}, isNew);
       if (isNew){ c.id = uid(); db.expenseCategories.push(c); }
     },
     onDelete: isNew ? null : () => {
@@ -462,7 +479,7 @@ function renderFixed(m){
 function togglePaid(key){
   const m = ui.month, [kind, id] = key.split(':');
   if (kind === 'i'){
-    const it = find(db.fixedItems, id); if (!it) return;
+    const it = at(find(db.fixedItems, id), m); if (!it) return;
     const t = itemTx(id, m);
     if (t && t.paid) db.fixedTx = db.fixedTx.filter(x => x !== t);
     else if (t) t.paid = true;
@@ -508,14 +525,14 @@ function txForm(t, catId){
   });
 }
 // Terugkerende regel (elke maand)
-function itemForm(it){
-  const m = ui.month, t = itemTx(it.id, m);
+function itemForm(raw){
+  const m = ui.month, t = itemTx(raw.id, m), it = at(raw, m);
   openForm({
     title: 'Terugkerende regel',
     fields: [
       {name:'name', label:'Naam', value:it.name},
       {name:'catId', label:'Post', type:'select', value:it.catId, options:postOptions()},
-      {name:'amount', label:'Verwacht bedrag per maand', type:'money', value:it.amount},
+      {name:'amount', label:'Verwacht bedrag per maand', type:'money', value:it.amount, hint:`Een wijziging geldt vanaf ${monthLabel(m)}. Eerdere maanden blijven ongewijzigd.`},
       {name:'day', label:'Dag van afschrijving (optioneel)', type:'number', value:it.day, min:1, max:31, placeholder:'1 – 31'},
       {section:`Betaling ${monthLabel(m)}`},
       {name:'paid', label:'Betaald', type:'checkbox', value:!!(t && t.paid)},
@@ -526,16 +543,18 @@ function itemForm(it){
     ],
     onSave: v => {
       if (!v.name) return 'Geef de regel een naam';
-      Object.assign(it, {name:v.name, catId:v.catId, amount:v.amount, day: v.day ? Math.min(31, Math.max(1, parseInt(v.day))) : ''});
+      Object.assign(raw, {name:v.name, catId:v.catId});
+      setFrom(raw, m, {amount:v.amount, day: v.day ? Math.min(31, Math.max(1, parseInt(v.day))) : ''});
+      Object.assign(it, at(raw, m));
       if (v.paid){
         const date = (v.paidDate && v.paidDate.startsWith(m)) ? v.paidDate : dateInMonth(m, it.day || 1);
         if (t) Object.assign(t, {paid:true, date, amount:v.paidAmount, desc:it.name, catId:it.catId});
         else db.fixedTx.push({id:uid(), itemId:it.id, catId:it.catId, desc:it.name, amount:v.paidAmount, date, paid:true});
       } else if (t) db.fixedTx = db.fixedTx.filter(x => x !== t);
-      if (v.stop && !it.end) it.end = m;
-      if (!v.stop) it.end = null;
+      if (v.stop && !raw.end) raw.end = m;
+      if (!v.stop) raw.end = null;
     },
-    onDelete: () => { db.fixedItems = db.fixedItems.filter(x => x.id !== it.id); db.fixedTx = db.fixedTx.filter(x => x.itemId !== it.id); },
+    onDelete: () => { db.fixedItems = db.fixedItems.filter(x => x.id !== raw.id); db.fixedTx = db.fixedTx.filter(x => x.itemId !== it.id); },
     deleteConfirm: 'Deze regel helemaal verwijderen, ook uit eerdere maanden? Wil je hem alleen stopzetten, gebruik dan “Stopt na …”.',
   });
 }
@@ -543,7 +562,7 @@ function openPostManager(){
   const m = ui.month;
   const rows = db.fixedCats.map(c => `<button class="row" data-act="editPost" data-id="${c.id}" data-back="1"><span class="dot" style="background:${c.color}"></span><span class="grow">${esc(c.name)}</span><span class="muted">${eur(postBudget(c,m))}</span></button>`).join('');
   openSheet(`<div class="sheethead"><h3>Posten & budgetten</h3><button class="iconbtn" data-close aria-label="Sluiten">✕</button></div>
-    <p class="p">Een post is een groep vaste lasten met één budget, bijvoorbeeld “Gas, water & licht” of “Overig”. Totaal: <b class="txt">${eur(sum(db.fixedCats.map(c => postBudget(c,m))))}</b> per maand.</p>
+    <p class="p">Een post is een groep vaste lasten met één budget, bijvoorbeeld “Gas, water & licht” of “Overig”. Budgetten voor ${monthLabel(m)}; een wijziging geldt vanaf deze maand. Totaal: <b class="txt">${eur(sum(db.fixedCats.map(c => postBudget(c,m))))}</b> per maand.</p>
     <div>${rows || '<p class="empty">Nog geen posten.</p>'}</div>
     <div class="formactions"><button class="btn primary" data-act="editPost" data-back="1">+ Post toevoegen</button></div>`);
 }
@@ -554,12 +573,12 @@ function postForm(c, back){
     title: isNew ? 'Nieuwe post' : 'Post bewerken',
     fields: [
       {name:'name', label:'Naam', value:c.name, placeholder:'Bijv. Gas, water & licht', autofocus:isNew},
-      {name:'budget', label:'Budget per maand', type:'money', value:c.budget, hint:'Laat leeg om automatisch de som van de terugkerende regels te gebruiken.'},
+      {name:'budget', label:'Budget per maand', type:'money', value: isNew ? c.budget : at(c,ui.month).budget, hint:'Laat leeg om automatisch de som van de terugkerende regels te gebruiken.' + (isNew ? '' : ` Een wijziging geldt vanaf ${monthLabel(ui.month)}.`)},
     ],
     back: back ? openPostManager : null,
     onSave: v => {
       if (!v.name) return 'Geef de post een naam';
-      Object.assign(c, {name:v.name, budget:v.budget});
+      c.name = v.name; setFrom(c, ui.month, {budget:v.budget}, isNew);
       if (isNew){ c.id = uid(); db.fixedCats.push(c); }
     },
     onDelete: isNew ? null : () => {
@@ -579,7 +598,7 @@ function renderSavings(m){
   const totalAll = sum(db.pots.map(p => potBalance(p,m)));
   const potMap = Object.fromEntries(db.pots.map(p => [p.id,p]));
   const cards = db.pots.map(p => {
-    const bal = potBalance(p,m), goal = num(p.goal), monthly = num(p.monthly);
+    const bal = potBalance(p,m), goal = num(p.goal), monthly = num(at(p,m).monthly);
     const thisM = sum(deps.filter(d => d.potId === p.id).map(d => d.amount));
     return `<div class="card">
       <div class="pothead" data-act="editPot" data-id="${p.id}"><span class="dot" style="background:${p.color}"></span><b class="grow">${esc(p.name)}</b><span class="big2">${eur(bal)}</span></div>
@@ -608,12 +627,12 @@ function potForm(p){
     fields: [
       {name:'name', label:'Naam', value:p.name, placeholder:'Bijv. Buffer', autofocus:isNew},
       {name:'goal', label:'Spaardoel (totaal)', type:'money', value:p.goal, hint:'Optioneel.'},
-      {name:'monthly', label:'Doel per maand', type:'money', value:p.monthly, hint:'Optioneel: hoeveel je per maand in dit potje wilt stoppen.'},
+      {name:'monthly', label:'Doel per maand', type:'money', value: isNew ? p.monthly : at(p,ui.month).monthly, hint:'Optioneel: hoeveel je per maand in dit potje wilt stoppen.' + (isNew ? '' : ` Een wijziging geldt vanaf ${monthLabel(ui.month)}.`)},
       {name:'start', label:'Huidig saldo (startbedrag)', type:'money', value:p.start, hint:'Wat er nu al in dit potje zit.'},
     ],
     onSave: v => {
       if (!v.name) return 'Geef het potje een naam';
-      Object.assign(p, {name:v.name, goal:v.goal, monthly:v.monthly, start:v.start});
+      Object.assign(p, {name:v.name, goal:v.goal, start:v.start}); setFrom(p, ui.month, {monthly:v.monthly}, isNew);
       if (isNew){ p.id = uid(); db.pots.push(p); }
     },
     onDelete: isNew ? null : () => { db.pots = db.pots.filter(x => x.id !== p.id); db.deposits = db.deposits.filter(d => d.potId !== p.id); },
@@ -624,7 +643,7 @@ function depositForm(d, potId){
   if (!db.pots.length){ toast('Maak eerst een spaarpotje aan'); potForm(); return; }
   const isNew = !d;
   const pot = db.pots.find(p => p.id === potId);
-  d = d || { potId: potId || db.pots[0].id, amount: pot && num(pot.monthly) ? pot.monthly : '', date: defaultDate(ui.month), note:'' };
+  d = d || { potId: potId || db.pots[0].id, amount: pot && num(at(pot,ui.month).monthly) ? at(pot,ui.month).monthly : '', date: defaultDate(ui.month), note:'' };
   openForm({
     title: isNew ? 'Inleggen' : 'Inleg bewerken',
     fields: [
@@ -717,7 +736,7 @@ function renderOverview(m){
     {k:'Sparen', v:t.savings, c:'var(--save)'},
   ];
   const stack = parts.map(p => p.v > 0 ? `<i style="width:${p.v/base*100}%;background:${p.c}"></i>` : '').join('') + (t.rest > 0 ? `<i style="width:${t.rest/base*100}%;background:var(--rest)"></i>` : '');
-  const varBudget = sum(db.expenseCategories.map(c => c.budget));
+  const varBudget = sum(db.expenseCategories.map(c => at(c,m).budget));
   const backupOld = !db.lastBackup || (Date.now() - toDate(db.lastBackup).getTime()) > 30*864e5;
   const hasData = db.expenses.length + db.incomes.length + db.deposits.length + db.fixedTx.length + db.fixedItems.length > 0;
   return `
